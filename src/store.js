@@ -21,9 +21,10 @@ export class Store {
   }
   getMeta(key) { return this.db.prepare('SELECT value FROM meta WHERE key=?').get(key)?.value; }
   setMeta(key, value) { this.db.prepare('INSERT OR REPLACE INTO meta VALUES (?,?)').run(key, String(value)); }
-  saveQuestion(input) {
+  saveQuestion(input, { replace = true } = {}) {
     const q = validateQuestion(input);
     this.transaction(() => {
+      if (!replace && this.question(q.week)) throw new Error('A question already exists for this week');
       if (this.db.prepare('SELECT 1 FROM jobs WHERE week=?').get(q.week)) throw new Error('Scheduled questions are immutable; use a different week or an explicit correction outside the bot');
       this.db.prepare('INSERT INTO questions VALUES (?,?,?,0) ON CONFLICT(week) DO UPDATE SET body=excluded.body,hash=excluded.hash,approved=0').run(q.week, JSON.stringify(q), contentHash(q));
     });

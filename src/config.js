@@ -10,7 +10,7 @@ export function loadConfig(path = 'config.json') {
   if (!Array.isArray(c.groups) || c.groups.some(g => typeof g !== 'string' || !/^\d+(?:-\d+)?@g\.us$/.test(g)) || new Set(c.groups).size !== c.groups.length) {
     throw new Error('groups must contain distinct WhatsApp group IDs ending in @g.us');
   }
-  for (const field of ['liveEnabled', 'autoApprove', 'autoGenerate']) {
+  for (const field of ['liveEnabled', 'testMode', 'autoGenerate']) {
     if (typeof c[field] !== 'boolean') throw new Error(`${field} must be boolean`);
   }
   for (const field of ['pollGraceMinutes', 'answerGraceMinutes']) {
@@ -20,6 +20,7 @@ export function loadConfig(path = 'config.json') {
   if (typeof c.language !== 'string' || !c.language.trim()) throw new Error('language is required');
   if (typeof c.geminiModel !== 'string' || (c.geminiModel && !/^[a-zA-Z0-9._-]+$/.test(c.geminiModel))) throw new Error('Invalid Gemini model ID');
   if (typeof c.runtimeDir !== 'string' || !c.runtimeDir.trim()) throw new Error('runtimeDir is required');
-  if (c.liveEnabled && (!c.firstTuesday || c.groups.length !== 3)) throw new Error('Live mode requires a first Tuesday and exactly three groups');
+  if (c.autoApprove === true) throw new Error('Automatic approval is unsupported: each question requires your review');
+  if (c.liveEnabled && (!c.firstTuesday || c.groups.length !== (c.testMode ? 1 : 3))) throw new Error('Live mode requires a first Tuesday and exactly three groups (one in testMode)');
   return { ...c, runtimeDir: resolve(c.runtimeDir) };
 }

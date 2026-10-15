@@ -2,7 +2,7 @@
   "firstTuesday": null,
   "groups": [],
   "liveEnabled": false,
-  "autoApprove": false,
+  "testMode": false,
   "autoGenerate": true,
   "language": "English",
   "pollGraceMinutes": 120,

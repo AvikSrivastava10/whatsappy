@@ -1,0 +1,8 @@
+{
+  "week": 1,
+  "topic": "Generalization",
+  "question": "A classifier scores 99% on training data and 70% on a representative unseen test set. Which problem is most consistent with this gap?",
+  "options": ["Underfitting", "Overfitting", "Perfect generalization", "Guaranteed class balance"],
+  "correctOptionIndex": 1,
+  "explanation": "The gap suggests overfitting: the model's training performance does not generalize well. Check data quality and evaluation first; regularization or a simpler model may help."
+}

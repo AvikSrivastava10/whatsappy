@@ -1,0 +1,14 @@
+{
+  "name": "whatsappy",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Weekly AI/ML WhatsApp quizzes hosted in Termux",
+  "engines": { "node": ">=22.16.0" },
+  "scripts": {
+    "start": "node src/cli.js run",
+    "bot": "node src/cli.js",
+    "test": "node --test",
+    "check": "node --check src/cli.js && node --test"
+  }
+}

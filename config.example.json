@@ -1,0 +1,13 @@
+{
+  "firstTuesday": null,
+  "groups": [],
+  "liveEnabled": false,
+  "autoApprove": false,
+  "autoGenerate": true,
+  "language": "English",
+  "pollGraceMinutes": 120,
+  "answerGraceMinutes": 1440,
+  "generationLeadDays": 3,
+  "geminiModel": "",
+  "runtimeDir": "runtime"
+}

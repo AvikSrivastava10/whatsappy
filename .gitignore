@@ -1,0 +1,10 @@
+/docs/
+/node_modules/
+/runtime/
+/.env
+/.env.*
+!/.env.example
+/config.json
+*.log
+*.sqlite*
+coverage/

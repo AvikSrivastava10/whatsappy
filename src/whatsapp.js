@@ -14,6 +14,7 @@ export class WhatsApp {
     this.stopped = false;
     this.retries = 0;
     this.pairingRequested = false;
+    this.saves = Promise.resolve();
   }
   ready() { return this.connected && !this.stopped; }
   async start() {
@@ -23,6 +24,7 @@ export class WhatsApp {
   async connect() {
     if (this.stopped) return;
     const { state, saveCreds } = await useMultiFileAuthState(this.directory);
+    if (this.stopped) return;
     const sock = makeWASocket({
       auth: state, logger: pino({ level: 'silent' }), browser: Browsers.ubuntu('Chrome'),
       markOnlineOnConnect: false, syncFullHistory: false,
@@ -31,12 +33,14 @@ export class WhatsApp {
     });
     this.socket = sock;
     // Serialize credential writes so events cannot overwrite newer state out of order.
-    let saves = Promise.resolve();
     sock.ev.on('creds.update', () => {
-      saves = saves.then(saveCreds).catch(() => { this.report('auth_save_failed'); this.stop(); });
+      this.saves = this.saves.then(saveCreds).catch(() => { this.report('auth_save_failed'); this.stop(); });
     });
     sock.ev.on('connection.update', update => {
       if (this.stopped || this.socket !== sock) return;
+      if (update.qr && !this.interactive) {
+        this.report('relink_required'); this.stop(); return;
+      }
       if (update.qr && this.interactive && !this.phone) {
         console.log('Scan this QR using WhatsApp > Linked devices > Link a device.');
         qr.generate(update.qr, { small: true });
@@ -90,4 +94,5 @@ export class WhatsApp {
     this.stopped = true; this.connected = false; clearTimeout(this.timer);
     this.socket?.end(new Error('Local shutdown'));
   }
+  async flush() { await this.saves; }
 }

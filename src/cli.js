@@ -1,5 +1,5 @@
 import { mkdirSync, readFileSync, writeFileSync, existsSync, copyFileSync, chmodSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { join } from 'node:path';
 import lockfile from 'proper-lockfile';
 import { loadConfig } from './config.js';
 import { Store } from './store.js';
@@ -108,7 +108,10 @@ async function main() {
               // Dispatch first; a slow generation request must not delay already prepared jobs.
               store.materialize(config);
               if (config.liveEnabled) await dispatch(store, wa, config);
-              await prepare(store, config);
+              try {
+                const created = await prepare(store, config);
+                for (const w of created) console.log(JSON.stringify({ event: 'draft_ready_review_required', week: w }));
+              } catch { console.log(JSON.stringify({ event: 'generation_failed', action: 'Check Gemini key, model, quota, or candidate validity. Automatic retry in six hours.' })); }
             } catch { report('cycle_failed_check_config_quota_or_database'); }
             for (let i = 0; i < 30 && !stopping; i++) await new Promise(r => setTimeout(r, 1000));
           }
@@ -117,7 +120,7 @@ async function main() {
       }
       default: throw new Error(`Unknown command: ${command}. Run help.`);
     }
-  } finally { wa?.stop(); if (release) await release(); store.close(); }
+  } finally { wa?.stop(); await wa?.flush(); if (release) await release(); store.close(); }
 }
 
 main().catch(error => {

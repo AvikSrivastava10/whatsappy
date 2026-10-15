@@ -2,7 +2,8 @@ import { currentWeek, schedule, DAY } from './schedule.js';
 import { generateQuestion } from './gemini.js';
 
 export async function prepare(store, config, { now = Date.now(), generate = generateQuestion } = {}) {
-  if (!config.autoGenerate || !config.firstTuesday || store.getMeta('paused') === 'true') return;
+  const created = [];
+  if (!config.autoGenerate || !config.firstTuesday || store.getMeta('paused') === 'true') return created;
   const current = currentWeek(config.firstTuesday, now);
   // Prepare the current eligible release and the upcoming release ahead of time.
   for (const week of [current, current + 1]) {
@@ -15,5 +16,7 @@ export async function prepare(store, config, { now = Date.now(), generate = gene
     store.setMeta(key, now + 6 * 60 * 60_000);
     const q = await generate(config, week, store.questions());
     store.saveQuestion(q, { replace: false });
+    created.push(week);
   }
+  return created;
 }

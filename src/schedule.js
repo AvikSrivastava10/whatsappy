@@ -1,6 +1,31 @@
 export const DAY = 86_400_000;
 export const WEEK = 7 * DAY;
 
+export function parseIST(value) {
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/.test(value)) {
+    throw new Error('Enter date and time as YYYY-MM-DD HH:mm in IST (Asia/Kolkata)');
+  }
+  const [date, time] = value.split(' ');
+  const day = new Date(`${date}T00:00:00Z`);
+  const [hours, minutes] = time.split(':').map(Number);
+  if (!Number.isFinite(+day) || day.toISOString().slice(0, 10) !== date || hours > 23 || minutes > 59) {
+    throw new Error('Invalid IST calendar date or time');
+  }
+  return Date.parse(`${date}T${time}:00+05:30`);
+}
+
+export function customSchedule(pollInput, answerInput, now = Date.now()) {
+  const poll = parseIST(pollInput);
+  const answer = parseIST(answerInput);
+  if (poll <= now) throw new Error('Poll date/time must be in the future');
+  if (answer <= poll) throw new Error('Answer date/time must be after the poll');
+  return { poll, answer };
+}
+
+export function formatIST(timestamp) {
+  return `${new Date(timestamp + 330 * 60_000).toISOString().slice(0, 16).replace('T', ' ')} IST (Asia/Kolkata)`;
+}
+
 export function tuesday(date) {
   if (typeof date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error('Date must be YYYY-MM-DD');
   const day = new Date(`${date}T00:00:00Z`);

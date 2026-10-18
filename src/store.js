@@ -14,6 +14,15 @@ export class Store {
       CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);`);
   }
   close() { this.db.close(); }
+  bindEnvironment(testMode) {
+    const environment = testMode ? 'test' : 'production';
+    this.transaction(() => {
+      const stored = this.getMeta('environment');
+      if (stored && stored !== environment) throw new Error('Database environment mismatch; test and production databases cannot be reused');
+      if (!stored && testMode && this.jobs().length) throw new Error('Cannot adopt an existing production/legacy jobs database for tests');
+      this.setMeta('environment', environment);
+    });
+  }
   transaction(fn) {
     this.db.exec('BEGIN IMMEDIATE');
     try { const result = fn(); this.db.exec('COMMIT'); return result; }
@@ -37,6 +46,13 @@ export class Store {
     this.db.prepare('UPDATE questions SET approved=1 WHERE week=?').run(week);
   }
   materialize(config) {
+    this.bindEnvironment(config.testMode);
+    if (config.testMode) {
+      if (!config.testSchedule) return; // Approval stores a template; test-run schedules it explicitly.
+      this.materializeTest(config);
+      return;
+    }
+    if (config.testSchedule) throw new Error('Custom schedules are forbidden in production');
     if (!config.firstTuesday || !config.groups.length) return;
     this.transaction(() => {
       const signature = JSON.stringify([config.firstTuesday, [...config.groups].sort(), config.pollGraceMinutes, config.answerGraceMinutes]);
@@ -54,6 +70,25 @@ export class Store {
       }
     });
   }
+  materializeTest(config) {
+    const { week, poll, answer } = config.testSchedule;
+    if (!Number.isInteger(week) || !Number.isFinite(poll) || !Number.isFinite(answer) || answer <= poll || !config.groups.length) {
+      throw new Error('Invalid custom test schedule or empty test allowlist');
+    }
+    this.transaction(() => {
+      if (!this.question(week)?.approved) throw new Error('Approve the test question before scheduling');
+      const signature = JSON.stringify([week, poll, answer, [...config.groups].sort(), config.pollGraceMinutes, config.answerGraceMinutes]);
+      const previous = this.getMeta('schedule');
+      if (previous && previous !== signature) throw new Error('An existing test run is immutable; start a new test-run for new times');
+      this.setMeta('schedule', signature);
+      for (const group of config.groups) for (const kind of ['poll', 'answer']) {
+        const due = kind === 'poll' ? poll : answer;
+        // Never send a delayed poll after the requested answer time.
+        const deadline = kind === 'poll' ? Math.min(due + config.pollGraceMinutes * 60_000, answer - 1) : due + config.answerGraceMinutes * 60_000;
+        this.db.prepare('INSERT OR IGNORE INTO jobs (week,group_id,kind,due,deadline) VALUES (?,?,?,?,?)').run(week, group, kind, due, deadline);
+      }
+    });
+  }
   jobs() { return this.db.prepare('SELECT * FROM jobs ORDER BY due,id').all(); }
   event(id, at, event) { this.db.prepare('INSERT INTO events (job_id,at,event) VALUES (?,?,?)').run(id, at, event); }
   recover(now) {
@@ -65,6 +100,7 @@ export class Store {
     return this.transaction(() => {
       this.recover(now);
       const job = this.db.prepare(`SELECT j.* FROM jobs j WHERE j.state IN ('pending','retry_wait') AND j.due<=? AND j.next_attempt<=? AND j.deadline>=?
+        AND EXISTS (SELECT 1 FROM questions q WHERE q.week=j.week AND q.approved=1)
         AND (j.kind='poll' OR EXISTS (SELECT 1 FROM jobs p WHERE p.week=j.week AND p.group_id=j.group_id AND p.kind='poll' AND p.state='sent')) ORDER BY j.due,j.id LIMIT 1`).get(now, now, now);
       if (!job) return null;
       this.db.prepare("UPDATE jobs SET state='sending',attempts=attempts+1,lease=? WHERE id=?").run(now + 120_000, job.id);

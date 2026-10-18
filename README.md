@@ -35,7 +35,7 @@ Edit `config.json` using a text editor in Termux (install one if needed). Set:
 | `firstTuesday` | First publishing date, `YYYY-MM-DD`; must be a Tuesday |
 | `groups` | Three distinct group IDs obtained in step 3 |
 | `liveEnabled` | Leave `false` until ready to send |
-| `testMode` | `false` for three real groups; `true` permits exactly one private test group |
+| `testMode` | Keep `false` in production; tests use their own `config.test.json` |
 | `autoGenerate` | Prepare draft questions in the background; never auto-approve |
 | `language` | Defaults to English |
 | `pollGraceMinutes` | Default 120: polls missed after Tuesday 10:00 IST are skipped |
@@ -52,7 +52,7 @@ Put your key in the local `.env` file as `GEMINI_API_KEY=...`. Do not paste it i
 npm run bot -- doctor
 ```
 
-`config.json`, `.env`, `runtime/`, and `docs/` are excluded from Git. If you choose a different runtime directory, add it to `.gitignore` before using it. Configuration is read at process start: restart the service after edits.
+`config.json`, `config.test.json`, `.env`, `runtime/`, `runtime-test/`, and `docs/` are excluded from Git. If you choose a different runtime directory, add it to `.gitignore` before using it. Runtime paths are relative to the project working directory. Configuration is read at process start: restart the production service after edits. Live tests also recheck isolation before dispatching.
 
 ## 3. Link your WhatsApp account
 
@@ -133,7 +133,96 @@ In Android/Realme settings, allow Termux background activity and disable battery
 
 **Launch:** after reviewing content, verifying IDs/start date, and testing the device, stop the service, set `liveEnabled=true`, and restart it. Enabling live mode is the point at which scheduled sends become possible. Pause before changing configuration. Production requires exactly three groups.
 
-For a private test, use `testMode=true`, one test-group ID, and a separate `runtimeDir`. The normal Tuesday/Wednesday schedule still applies. Use a separate ignored configuration selected with `WHATSAPPY_CONFIG` when running test commands. Never reuse test jobs as production jobs or delete the delivery database to reset a live release.
+For flexible private tests, follow the next section. Do not change production's `testMode`, first Tuesday, runtime, or group list to run a test.
+
+## Flexible tests on any day/time (IST)
+
+Each **new** `test-run` asks for the poll date/time and answer date/time in `YYYY-MM-DD HH:mm` format, interpreted strictly as **Asia/Kolkata (IST)** regardless of your phone/laptop timezone. Both can be on the same day; the poll must be in the future and the answer must be later. Invalid or incomplete input creates no run. Choose times a few minutes ahead so the WhatsApp connection can complete. Delivery is best effort, normally checked every second in the test runner.
+
+Test templates and approval records live in `runtime-test/quiz.sqlite`. Each run gets its own immutable question snapshot and SQLite database at `runtime-test/runs/RUN_ID/quiz.sqlite`. Times are never written to either configuration file. New schedules cannot rewrite previous test jobs or production jobs.
+
+### One-time setup
+
+Run these commands from the project directory in Termux:
+
+```sh
+git pull --ff-only
+npm ci
+npm run bot -- init
+npm run bot -- test-init
+npm run bot -- link --config config.test.json
+npm run bot -- groups --config config.test.json
+```
+
+`init` leaves an existing production configuration untouched. `test-init` creates only `config.test.json`, without overwriting it on repeat calls. Test account linking uses separate credentials under `runtime-test/auth`; do not copy or symlink production credentials or databases. If linking on the same phone, add your digits-only international number after `link` as described earlier.
+
+Edit **only `config.test.json`** and put the ID(s) of your private test groups into `testGroups`, for example:
+
+```json
+"testGroups": ["YOUR_TEST_GROUP_ID@g.us"]
+```
+
+Replace the placeholder with the actual ID returned by `groups`. The allowlist must not overlap production's `groups`. One or more test groups are supported. Keep `testMode=true`, `firstTuesday=null`, `autoGenerate=false`, and `liveEnabled=false`. `--live` explicitly authorizes live execution for one test invocation; do not edit `liveEnabled` for tests.
+
+`productionConfig` identifies the production settings file to read for isolation checks (default `config.json`, relative to the test config file). Test and production runtime directories must be disjoint, not nested; runtime symlinks/hard links are rejected. A missing or invalid production reference fails closed. If you previously used the old testMode flag in production, restore the production config and create the dedicated test config; existing legacy databases are never silently converted to test databases.
+
+### Review a test question
+
+Use the supplied sample, or generate a draft using the test config's `geminiModel` and your existing private API key:
+
+```sh
+npm run bot -- import examples/question.json --config config.test.json
+npm run bot -- preview 1 --config config.test.json
+npm run bot -- approve 1 --config config.test.json
+```
+
+Alternatively, use `npm run bot -- generate 1 --config config.test.json` instead of import, then preview and approve. Approval is required in the **test database** even if a similar production question is already approved. Replacing a template clears its approval; snapshots of earlier runs remain unchanged. Approval alone creates no test delivery jobs.
+
+### Schedule and execute
+
+First, a dry run (no WhatsApp connection):
+
+```sh
+npm run bot -- test-run 1
+```
+
+Enter the two future IST date/times when prompted. This prints and stores the planned jobs, then exits without sending or pretending they were delivered.
+
+When ready for a **live** test:
+
+```sh
+npm run bot -- test-run 1 --live
+```
+
+It asks for both times **again**, creates a new isolated run, connects using the test credentials, and waits to send. Leave this foreground process running through both times. It exits after all jobs are sent/skipped, or stops for an uncertain delivery. Ctrl+C stops the process; an in-flight send may still finish. No production service/configuration changes are needed.
+
+All `test-*` commands default to `config.test.json` (ignoring a production `WHATSAPPY_CONFIG` override). Use `--config PATH` explicitly for a differently named test config. The normal `run` command rejects test configuration, preventing accidental replay of old test jobs.
+
+### Status, pause, and interrupted runs
+
+```sh
+npm run bot -- test-status
+npm run bot -- pause --config config.test.json
+npm run bot -- resume --config config.test.json
+```
+
+For a process interruption, recover the **same** live run using its printed ID:
+
+```sh
+npm run bot -- test-resume RUN_ID --live
+```
+
+Recovery intentionally retains the original timestamps rather than prompting for new ones. Use `test-run` for a new schedule. A dry run cannot be promoted to live; changed test allowlists/windows must be restored before recovery. Missed polls expire by the earlier of the configured poll grace deadline and the requested answer time. Answers still require a confirmed poll in the same group. Existing pause, retry, expiry, and ambiguous-send safeguards apply.
+
+An `unknown` delivery stops execution for manual inspection. Reconcile it using exactly one appropriate action before resuming:
+
+```sh
+npm run bot -- test-resolve RUN_ID JOB_ID sent CONFIRMED_MESSAGE_ID
+npm run bot -- test-resolve RUN_ID JOB_ID retry
+npm run bot -- test-resolve RUN_ID JOB_ID skip
+```
+
+Never retry unless you have confirmed that the original message was not sent. A restart during transmission becomes `unknown` when its two-minute lease expires. Test status/history is retained even when a new run is scheduled. The production timetable remains Tuesday 08:00 / Wednesday 08:00 IST.
 
 ## Operations and recovery
 

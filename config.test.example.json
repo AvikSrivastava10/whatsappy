@@ -1,0 +1,14 @@
+{
+  "productionConfig": "config.json",
+  "firstTuesday": null,
+  "testGroups": [],
+  "liveEnabled": false,
+  "testMode": true,
+  "autoGenerate": false,
+  "language": "English",
+  "pollGraceMinutes": 120,
+  "answerGraceMinutes": 1440,
+  "generationLeadDays": 3,
+  "geminiModel": "",
+  "runtimeDir": "runtime-test"
+}

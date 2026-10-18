@@ -1,10 +1,12 @@
 /docs/
 /node_modules/
 /runtime/
+/runtime-test/
 /.env
 /.env.*
 !/.env.example
 /config.json
+/config.test.json
 *.log
 *.sqlite*
 coverage/

@@ -7,10 +7,17 @@ import { pollPayload, answerPayload } from './content.js';
 import { dispatch } from './dispatcher.js';
 import { generateQuestion } from './gemini.js';
 import { prepare } from './prepare.js';
+import { readTestSchedule, createTestRun, openTestRun, listTestRuns, summarizeRun, executeTestRun } from './testing.js';
 
 const help = `Whatsappy — Tuesday polls / Wednesday answers at 08:00 IST
 Commands (npm run bot -- COMMAND):
   init                     Create local config.json and .env (never overwrite)
+  test-init                Create config.test.json (never overwrite production)
+  test-run WEEK [--live]    Ask for poll/answer IST times; dry-run by default
+  test-resume ID [--live]   Recover an existing run with its original times/mode
+  test-status              List isolated test runs and delivery jobs
+  test-resolve RUN ID sent MSG_ID | retry | skip
+                           Reconcile an uncertain test delivery after inspection
   doctor                   Check runtime, configuration and SQLite
   import FILE              Import a question JSON (review required)
   generate WEEK            Generate a draft with Gemini
@@ -27,24 +34,43 @@ Commands (npm run bot -- COMMAND):
   backup                   Create a consistent database backup under runtime/backups
 
 Config path: WHATSAPPY_CONFIG environment variable (default config.json).
+Use --config FILE to select explicitly; test-* defaults to config.test.json.
 Stop the service before link/groups. No command sends an immediate test message.`;
 
 async function main() {
   process.umask(0o077);
-  const [command = 'help', ...args] = process.argv.slice(2);
+  const argv = process.argv.slice(2);
+  const configIndex = argv.indexOf('--config');
+  let explicitConfig;
+  if (configIndex !== -1) {
+    explicitConfig = argv[configIndex + 1];
+    if (!explicitConfig || explicitConfig.startsWith('--')) throw new Error('--config requires a filename');
+    argv.splice(configIndex, 2);
+  }
+  const [command = 'help', ...args] = argv;
   if (command === 'help' || command === '--help') { console.log(help); return; }
   if (command === 'init') {
+    if (explicitConfig) throw new Error('init creates config.json; use test-init for the dedicated test configuration');
     for (const [source, dest] of [['config.example.json', 'config.json'], ['.env.example', '.env']]) {
       if (!existsSync(dest)) copyFileSync(source, dest);
     }
     console.log('Local config.json and .env are ready. Edit them before live operation.'); return;
   }
-  const config = loadConfig(process.env.WHATSAPPY_CONFIG || 'config.json');
+  if (command === 'test-init') {
+    if (explicitConfig) throw new Error('test-init creates config.test.json; edit its productionConfig path afterward if needed');
+    if (!existsSync('config.test.json')) copyFileSync('config.test.example.json', 'config.test.json');
+    console.log('config.test.json ready. Configure testGroups; production settings were not changed.'); return;
+  }
+  const configPath = explicitConfig || (command.startsWith('test-') ? 'config.test.json' : process.env.WHATSAPPY_CONFIG || 'config.json');
+  const config = loadConfig(configPath);
+  if (command.startsWith('test-') && !config.testMode) throw new Error('Test commands require a dedicated test configuration');
+  if (command === 'run' && config.testMode) throw new Error('Use test-run WEEK: every new test requires fresh interactive IST times');
   mkdirSync(config.runtimeDir, { recursive: true, mode: 0o700 });
   if (process.platform !== 'win32') chmodSync(config.runtimeDir, 0o700);
   const store = new Store(join(config.runtimeDir, 'quiz.sqlite'));
   let release, wa;
   try {
+    store.bindEnvironment(config.testMode);
     const week = () => { const n = Number(args[0]); if (!Number.isInteger(n) || n < 1 || n > 520) throw new Error('Provide week 1..520'); return n; };
     const statusPath = join(config.runtimeDir, 'connection.json');
     const report = event => {
@@ -52,6 +78,40 @@ async function main() {
       console.log(JSON.stringify({ event, at: new Date().toISOString() }));
     };
     switch (command) {
+      case 'test-status': console.log(JSON.stringify(listTestRuns(config), null, 2)); break;
+      case 'test-resolve': {
+        const run = openTestRun(config, args[0], undefined, { inspect: true });
+        try { run.store.resolve(Number(args[1]), args[2], args[3] || null, Date.now()); }
+        finally { run.store.close(); }
+        console.log('Test reconciliation recorded.'); break;
+      }
+      case 'test-run': case 'test-resume': {
+        if (args.slice(1).some(arg => arg !== '--live') || args.filter(arg => arg === '--live').length > 1) throw new Error('Use test-run WEEK [--live] or test-resume ID [--live]');
+        const live = args.includes('--live');
+        release = await lockfile.lock(config.runtimeDir, { stale: 180_000, update: 10_000, retries: 0 });
+        let run;
+        if (command === 'test-run') {
+          const w = week();
+          if (!store.question(w)?.approved) throw new Error('Preview and approve the test question before running a test');
+          if (!config.groups.length) throw new Error('Configure testGroups before running a test');
+          const times = await readTestSchedule();
+          run = createTestRun(store, config, w, times, live);
+        } else run = openTestRun(config, args[0], live);
+        try {
+          console.log(JSON.stringify(summarizeRun(run), null, 2));
+          if (!live) { console.log('Dry-run saved. No WhatsApp connection or messages. Run test-run again with --live and enter fresh times when ready.'); break; }
+          const { WhatsApp } = await import('./whatsapp.js');
+          wa = new WhatsApp(join(config.runtimeDir, 'auth'), { report });
+          await wa.start();
+          let stopping = false;
+          const stop = () => { stopping = true; };
+          process.once('SIGINT', stop); process.once('SIGTERM', stop);
+          try { await executeTestRun(run, store, configPath, wa, { stopped: () => stopping }); }
+          finally { process.removeListener('SIGINT', stop); process.removeListener('SIGTERM', stop); }
+          console.log(JSON.stringify(summarizeRun(run), null, 2));
+        } finally { run.store.close(); }
+        break;
+      }
       case 'doctor':
         console.log(JSON.stringify({ node: process.version, platform: process.platform, sqlite: 'available',
           mode: config.liveEnabled ? 'live' : 'dry-run', groups: config.groups.length,
@@ -70,7 +130,7 @@ async function main() {
         const q = store.question(week()); if (!q) throw new Error('Question not found');
         console.log(JSON.stringify({ approved: q.approved, poll: pollPayload(q), answer: answerPayload(q) }, null, 2)); break;
       }
-      case 'approve': store.approve(week()); store.materialize(config); console.log('Approved. Jobs scheduled when a start date and groups are configured.'); break;
+      case 'approve': store.approve(week()); store.materialize(config); console.log(config.testMode ? 'Test template approved. Use test-run to enter times and create an isolated run.' : 'Approved. Jobs scheduled when a start date and groups are configured.'); break;
       case 'status':
         console.log(JSON.stringify({ mode: config.liveEnabled ? 'live' : 'dry-run', paused: store.getMeta('paused') === 'true',
           questions: store.questions().map(q => ({ week: q.week, topic: q.topic, approved: q.approved })), jobs: store.jobs(),
